@@ -1,0 +1,86 @@
+{
+  "upstream_commit": "ccdfaf3c1c109010d15399674ce278167cfde848",
+  "generator_binary_sha256": "616fa06e00e4fdec4245b8c8f2807579f89956614f75f567428fa2da38289c77",
+  "recipe": "Seeded WSJT-X ft8sim and generated Gaussian noise; generation parameters are recorded per case.",
+  "cases": [
+    {
+      "id": "ft8-clean",
+      "mode": "ft8",
+      "path": "tests/fixtures/ft8-clean.wav",
+      "seed": 100,
+      "snr_db": -10,
+      "dt_s": 0,
+      "frequency_hz": 1500,
+      "expected": [
+        "CQ K1ABC FN42"
+      ],
+      "truth": "generated",
+      "sha256": "ddb176f73d034dd05bf5be1cc0fd1f4fd9478300ca972710a94c013df0173b6d",
+      "sample_count": 180000
+    },
+    {
+      "id": "ft8-weak",
+      "mode": "ft8",
+      "path": "tests/fixtures/ft8-weak.wav",
+      "seed": 103,
+      "snr_db": -20,
+      "dt_s": 0,
+      "frequency_hz": 1500,
+      "expected": [
+        "CQ K1ABC FN42"
+      ],
+      "truth": "generated",
+      "sha256": "17d55285978b026d7a5f623786ca8098a44edd04c72ca199bffe2fc6d2451328",
+      "sample_count": 180000
+    },
+    {
+      "id": "ft8-noise",
+      "recipe": "Python random.Random(200); generate 180000 successive gauss(0, 100) values, apply Python round (ties to even), clip to [-32768,32767], and write mono 12000 Hz signed 16-bit little-endian PCM WAV. Recipe verified against every committed PCM sample.",
+      "mode": "ft8",
+      "path": "tests/fixtures/ft8-noise.wav",
+      "seed": 200,
+      "expected": [],
+      "truth": "generated_noise",
+      "sha256": "bfbeb86bd882b98d6fee40e9fe7355c3d96dec3ef1a824c01398933dc9f30d80",
+      "sample_count": 180000
+    },
+    {
+      "id": "ft8-mixture",
+      "path": "tests/fixtures/ft8-mixture.wav",
+      "sha256": "0794da28bc19e7e481e4c90d5fb581a900faa319d4743b88a431b1b8286031ef",
+      "sample_count": 180000,
+      "expected": [
+        "CQ K1ABC FN42",
+        "K1ABC W9XYZ EN37"
+      ],
+      "recipe": "Generate native ft8sim pure waveforms with args \"CQ K1ABC FN42\" 1500 0 0 0 1 99 and \"K1ABC W9XYZ EN37\" 1512.5 0 0 0 1 99. Scale each by100*sqrt(2*2500/6000)*10**(snr/20)/32767 with respective snrs -17 and -5dB, add ft8-noise samplewise and round.",
+      "native_ap_off_decode": {
+        "command": "jt9 --ft8 -p 15 -d 3 -a <temp> -t <temp> tests/fixtures/ft8-mixture.wav",
+        "messages": [
+          "K1ABC W9XYZ EN37",
+          "CQ K1ABC FN42"
+        ],
+        "snr_db": [
+          -5,
+          -17
+        ],
+        "frequency_hz": [
+          1513,
+          1500
+        ]
+      }
+    },
+    {
+      "id": "ft8-metric-fallback",
+      "path": "tests/fixtures/ft8-metric-fallback.wav",
+      "sha256": "300d4cef74a4b79be6c4ce6c8abbced43d9690d5a51f883a78ac51aa2ee27bac",
+      "sample_count": 180000,
+      "seed": 191043,
+      "expected": [
+        "CQ K9AN EN50",
+        "K1ABC W9XYZ EN37"
+      ],
+      "recipe": "Generate ft8sim \"K1ABC W9XYZ EN37\" 1500 0.4 0 0 1 -20 and \"CQ K9AN EN50\" 1506.25 0.4 0 0 1 99 with seed 191043. Scale the noise-free second waveform by 100*sqrt(2*2500/6000)*10**(6/20)/32766.9, add to the first, round and clip to signed int16."
+    }
+  ]
+}

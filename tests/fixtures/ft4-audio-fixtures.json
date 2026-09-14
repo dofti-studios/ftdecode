@@ -1,0 +1,185 @@
+{
+  "upstream_commit": "ccdfaf3c1c109010d15399674ce278167cfde848",
+  "generator_binary_sha256": "f4a3423624914730fe508bcc03da33cd0bd3908c8136d361eab54b7da1650d17",
+  "recipe": "Seeded WSJT-X ft4sim and generated Gaussian noise; generation parameters are recorded per case. Decode first 72576 PCM samples. Overlap test adds 0.65 times overlap recording to clean recording.",
+  "cases": [
+    {
+      "id": "ft4-clean",
+      "path": "tests/fixtures/ft4-clean.wav",
+      "sha256": "3c9fc84b29f9aaf255601d968943a4f3255414f3d8b370138a21e045c5c45cd3",
+      "sample_count": 72576,
+      "seed": 106,
+      "snr_db": -10,
+      "dt_s": 0,
+      "frequency_hz": 1500,
+      "expected": [
+        "CQ K1ABC FN42"
+      ],
+      "truth": "generated",
+      "command": [
+        "ft4sim",
+        "CQ K1ABC FN42",
+        "1500",
+        "0",
+        "0",
+        "0",
+        "1",
+        "-10"
+      ]
+    },
+    {
+      "id": "ft4-weak",
+      "path": "tests/fixtures/ft4-weak.wav",
+      "sha256": "974700027ebf9724775211b32e1e63ccf2d97dd9430856b576675dabec3b55aa",
+      "sample_count": 72576,
+      "seed": 109,
+      "snr_db": -16,
+      "dt_s": 0,
+      "frequency_hz": 1500,
+      "expected": [
+        "CQ K1ABC FN42"
+      ],
+      "truth": "generated",
+      "command": [
+        "ft4sim",
+        "CQ K1ABC FN42",
+        "1500",
+        "0",
+        "0",
+        "0",
+        "1",
+        "-16"
+      ]
+    },
+    {
+      "id": "ft4-noise",
+      "path": "tests/fixtures/ft4-noise.wav",
+      "sha256": "6de4ee1c93d59cbcbc617661f8527505ef3bdfde86442de6b4d6dffb255e0341",
+      "sample_count": 90000,
+      "seed": 200,
+      "expected": [],
+      "truth": "generated_noise",
+      "recipe": "Python random.Random(200), Gaussian sigma 100, clipped signed int16"
+    },
+    {
+      "id": "ft4-overlap",
+      "path": "tests/fixtures/ft4-overlap.wav",
+      "sha256": "a0c4761471fd794feee1f98e825a3cbbf012075d94bb13f8ef10c40030e79f65",
+      "sample_count": 72576,
+      "seed": 409,
+      "snr_db": -10,
+      "dt_s": 0.05,
+      "frequency_hz": 1535,
+      "expected": [
+        "CQ W9XYZ EN37"
+      ],
+      "truth": "generated",
+      "command": [
+        "ft4sim",
+        "CQ W9XYZ EN37",
+        "1535",
+        "0.05",
+        "0",
+        "0",
+        "1",
+        "-10"
+      ]
+    },
+    {
+      "id": "ft4-low",
+      "path": "tests/fixtures/ft4-low.wav",
+      "sha256": "5f3f169c67d73f850467b831d4e2d06e01262bb8b27051634aaa343d9fa07875",
+      "sample_count": 72576,
+      "seed": 510,
+      "snr_db": -10,
+      "dt_s": 0,
+      "frequency_hz": 100,
+      "expected": [
+        "CQ K1ABC FN42"
+      ],
+      "truth": "generated",
+      "command": [
+        "ft4sim",
+        "CQ K1ABC FN42",
+        "100",
+        "0",
+        "0",
+        "0",
+        "1",
+        "-10"
+      ]
+    },
+    {
+      "id": "ft4-high",
+      "path": "tests/fixtures/ft4-high.wav",
+      "sha256": "13c296111deea82b502492aa385cad5704574bf36ae6e7cccc18ba9f782abedb",
+      "sample_count": 72576,
+      "seed": 511,
+      "snr_db": -10,
+      "dt_s": 0,
+      "frequency_hz": 4950,
+      "expected": [
+        "CQ K1ABC FN42"
+      ],
+      "truth": "generated",
+      "command": [
+        "ft4sim",
+        "CQ K1ABC FN42",
+        "4950",
+        "0",
+        "0",
+        "0",
+        "1",
+        "-10"
+      ]
+    },
+    {
+      "id": "ft4-near-dc",
+      "path": "tests/fixtures/ft4-near-dc.wav",
+      "sha256": "313d4b91872a5ada5c3475d77c4a7c30c83e3a40445747a42fea302d8ef2d49f",
+      "sample_count": 72576,
+      "seed": 512,
+      "snr_db": -10,
+      "dt_s": 0,
+      "frequency_hz": 5,
+      "expected": [
+        "CQ K1ABC FN42"
+      ],
+      "truth": "generated",
+      "command": [
+        "ft4sim",
+        "CQ K1ABC FN42",
+        "5",
+        "0",
+        "0",
+        "0",
+        "1",
+        "-10"
+      ]
+    },
+    {
+      "id": "ft4-dc",
+      "path": "tests/fixtures/ft4-dc.wav",
+      "sha256": "a4ece85ca32f0a20fcfb07f1f6db7acf2ed16e982550ebb2054b24c71aaed33c",
+      "sample_count": 72576,
+      "seed": 513,
+      "snr_db": -10,
+      "dt_s": 0,
+      "frequency_hz": 0,
+      "expected": [
+        "CQ K1ABC FN42"
+      ],
+      "truth": "generated",
+      "command": [
+        "ft4sim",
+        "CQ K1ABC FN42",
+        "0",
+        "0",
+        "0",
+        "0",
+        "1",
+        "-10"
+      ]
+    }
+  ]
+}
