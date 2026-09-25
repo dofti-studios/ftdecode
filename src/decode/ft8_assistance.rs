@@ -577,6 +577,18 @@ struct Hypothesis {
     codeword: [bool; 174],
     tones: [u8; 79],
 }
+impl Hypothesis {
+    fn new(text: String, bits: [bool; 77]) -> Self {
+        let codeword = fec::encode(&bits);
+        let tones = symbols::ft8(&codeword);
+        Self {
+            text,
+            bits,
+            codeword,
+            tones,
+        }
+    }
+}
 fn grid4(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 4
@@ -692,16 +704,26 @@ fn hypotheses(call1: &str, call2: &str, grid: &str, a8: bool) -> Vec<Hypothesis>
                 Err(_) => continue,
             }
         };
-        let codeword = fec::encode(&bits);
-        let tones = symbols::ft8(&codeword);
-        result.push(Hypothesis {
-            text,
-            bits,
-            codeword,
-            tones,
-        });
+        result.push(Hypothesis::new(text, bits));
     }
     if !a8 {
+        // /P and /R fit standard exchanges, but the same stations may use a
+        // full portable call plus a hashed peer in type 4. History stores their
+        // resolved identities, so retain both wire forms and both hash roles.
+        if call1 != "CQ"
+            && ((first_std && call1.contains('/')) || (second_std && call2.contains('/')))
+        {
+            for prefix in [format!("<{call1}> {call2}"), format!("{call1} <{call2}>")] {
+                for exchange in ["", " RRR", " RR73", " 73"] {
+                    let text = format!("{prefix}{exchange}");
+                    if let Ok(bits) = message_encode::encode(&text)
+                        && bits[74..] == [true, false, false]
+                    {
+                        result.push(Hypothesis::new(text, bits));
+                    }
+                }
+            }
+        }
         // Bare calls and a missing grid can produce the same payload. They
         // must not compete with themselves in the runner-up distance check.
         let mut seen = std::collections::HashSet::new();
@@ -922,7 +944,7 @@ mod tests {
         };
         settings.ap.mode = ApMode::Auto;
         let cancel = AtomicBool::new(false);
-        for text in [
+        for (prior_text, text) in [
             "CQ EA8/K1ABC/P",
             "<W9XYZ> EA8/K1ABC/P RR73",
             "EA8/K1ABC/P <W9XYZ> 73",
@@ -930,15 +952,28 @@ mod tests {
             "<EA8/K1ABC/P> W9XYZ R-09",
             "CQ G4ABC/P IO91",
             "W9XYZ G4ABC/P RR73",
-        ] {
+            "<W9XYZ> G4ABC/P RR73",
+            "G4ABC/P <W9XYZ> 73",
+            "<W9XYZ> G4ABC/R",
+            "G4ABC/R <W9XYZ> RRR",
+            "<W9XYZ> K1A/P RR73",
+        ]
+        .into_iter()
+        .map(|text| (text, text))
+        .chain([
+            ("<W9XYZ> G4ABC/P RRR", "<W9XYZ> G4ABC/P RR73"),
+            ("G4ABC/P <W9XYZ> RR73", "G4ABC/P <W9XYZ> 73"),
+            ("W9XYZ G4ABC/P RR73", "<W9XYZ> G4ABC/P 73"),
+            ("<W9XYZ> G4ABC/P RR73", "W9XYZ G4ABC/P 73"),
+        ]) {
             let mut messages = MessageDecoder::default();
             for call in ["W9XYZ", "EA8/K1ABC/P"] {
                 messages.remember_call(call).unwrap();
             }
             let bits = message_encode::encode(text).unwrap();
             let mut prior = station(1500.0);
-            prior.source_bits = bits;
-            prior.message = messages.unpack(&bits).unwrap();
+            prior.source_bits = message_encode::encode(prior_text).unwrap();
+            prior.message = messages.unpack(&prior.source_bits).unwrap();
             let tones = symbols::ft8(&fec::encode(&bits));
             let mut audio = noise.clone();
             // Use the GFSK generator already checked against independent native
@@ -971,6 +1006,7 @@ mod tests {
                 found.iter().map(|c| &c.signal).collect::<Vec<_>>()
             );
             assert_eq!(found[0].signal.message.text, text);
+            assert_eq!(found[0].signal.source_bits, bits);
             assert_eq!(
                 found[0].signal.diagnostics.as_ref().unwrap().ap_type,
                 Some(7)

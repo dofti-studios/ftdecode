@@ -97,6 +97,8 @@ collisions set `CallsignHash.ambiguous` and leave `resolved` and the station's
 `call` absent. Ambiguity persists until reset or 22-bit cache eviction; repeated
 seeds do not override it. FT8 a7 history accepts resolved nonstandard and
 compound calls, while unresolved or ambiguous identities cannot seed it.
+For `/P` and `/R` calls, a7 considers both standard exchanges and type-4
+full-call/hashed-peer exchanges.
 Activity and contact state gate hypotheses, so enabling AP does not guarantee
 an assisted result. The protocol guide contains the full settings table.
 
