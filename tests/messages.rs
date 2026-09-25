@@ -24,7 +24,7 @@ fn named(name: &str) -> [bool; 77] {
 }
 
 #[test]
-fn received_messages_and_history_match_native_sessions() {
+fn received_messages_match_native_except_ambiguous_hashes() {
     for session in reference()["sessions"].as_array().unwrap() {
         let mut decoder = MessageDecoder::default();
         for seed in session["seeds"].as_array().unwrap() {
@@ -39,12 +39,15 @@ fn received_messages_and_history_match_native_sessions() {
                 session["name"]
             );
             if let Ok(result) = result {
-                assert_eq!(
-                    result.text,
-                    message["text"].as_str().unwrap(),
-                    "{}",
-                    session["name"]
-                );
+                // Native last-call-wins behavior is deliberately replaced by
+                // an unresolved identity when a collision has been observed.
+                let expected = if session["name"] == "latest call replaces colliding short hash" {
+                    assert!(result.hashes[0].ambiguous);
+                    "K1ABC RR73; W9XYZ <...> -08"
+                } else {
+                    message["text"].as_str().unwrap()
+                };
+                assert_eq!(result.text, expected, "{}", session["name"]);
             }
         }
     }
@@ -185,4 +188,114 @@ fn invalid_message_does_not_teach_a_callsign() {
         target[29 + i] = field & (1 << (27 - i)) != 0;
     }
     assert_eq!(decoder.unpack(&target).unwrap().hashes[0].resolved, None);
+}
+
+#[test]
+fn full_type4_destination_teaches_all_hash_widths() {
+    use ftdecode::message_encode::encode;
+    let mut decoder = MessageDecoder::default();
+    decoder
+        .unpack(&encode("PJ4/K1ABC <W9XYZ> RR73").unwrap())
+        .unwrap();
+    for (text, width) in [
+        ("K1ABC RR73; W9XYZ <PJ4/K1ABC> -10", 10),
+        ("<PJ4/K1ABC> YW18FIFA RR73", 12),
+        ("W9XYZ <PJ4/K1ABC> -11", 22),
+    ] {
+        let message = decoder.unpack(&encode(text).unwrap()).unwrap();
+        assert_eq!(message.hashes[0].width, width);
+        assert_eq!(message.hashes[0].resolved.as_deref(), Some("PJ4/K1ABC"));
+    }
+    decoder.reset();
+    let message = decoder
+        .unpack(&encode("W9XYZ <PJ4/K1ABC> -11").unwrap())
+        .unwrap();
+    assert_eq!(message.hashes[0].resolved, None);
+}
+
+#[test]
+fn hash_collisions_stay_unresolved_until_reset() {
+    use ftdecode::message_encode::encode;
+    for (a, b, width, value, text) in [
+        (
+            "K1AAM/P",
+            "K1AQC/P",
+            10,
+            262,
+            "K1ABC RR73; W9XYZ <K1AAM/P> -10",
+        ),
+        ("K1AAA/P", "K1BAP/P", 12, 364, "<K1AAA/P> PJ4/K1ABC RR73"),
+        (
+            "TA7CNW/P",
+            "PA0UCS/P",
+            22,
+            2_662_519,
+            "W9XYZ <TA7CNW/P> -11",
+        ),
+    ] {
+        let bits = encode(text).unwrap();
+        let mut decoder = MessageDecoder::default();
+        let unknown = decoder.unpack(&bits).unwrap();
+        assert_eq!(unknown.hashes[0].resolved, None);
+        assert!(!unknown.hashes[0].ambiguous);
+        decoder.remember_call(a).unwrap();
+        decoder
+            .remember_call(&format!("<{}>", a.to_ascii_lowercase()))
+            .unwrap();
+        let known = decoder.unpack(&bits).unwrap();
+        assert_eq!(known.hashes[0].resolved.as_deref(), Some(a));
+        assert!(!known.hashes[0].ambiguous);
+        decoder.remember_call(b).unwrap();
+        // Repeated seeds must not silently turn a collision back into a guess.
+        decoder.remember_call(a).unwrap();
+        for mut d in [decoder.clone(), decoder] {
+            let ambiguous = d.unpack(&bits).unwrap();
+            assert_eq!(ambiguous.hashes[0].width, width);
+            assert_eq!(ambiguous.hashes[0].value, value);
+            assert_eq!(ambiguous.hashes[0].resolved, None);
+            assert!(ambiguous.hashes[0].ambiguous);
+            assert!(ambiguous.text.contains("<...>"));
+            if let Some(station) = ambiguous
+                .fields
+                .sender
+                .as_ref()
+                .filter(|s| s.hash.is_some())
+            {
+                assert_eq!(station.call, None);
+                assert!(station.hash.as_ref().unwrap().ambiguous);
+            }
+            d.reset();
+            d.remember_call(a).unwrap();
+            let known = d.unpack(&bits).unwrap();
+            assert!(!known.hashes[0].ambiguous);
+            assert_eq!(known.hashes[0].resolved.as_deref(), Some(a));
+        }
+    }
+}
+
+#[test]
+fn full_call_revealing_collision_invalidates_same_message_resolution() {
+    let mut decoder = MessageDecoder::default();
+    decoder.remember_call("K1AAA/P").unwrap();
+    let wire = ftdecode::message_encode::encode("<K1AAA/P> K1BAP/P RR73").unwrap();
+    let message = decoder.unpack(&wire).unwrap();
+    assert_eq!(message.text, "<...> K1BAP/P RR73");
+    assert!(message.hashes[0].ambiguous);
+    assert_eq!(message.fields.recipient.unwrap().call, None);
+
+    // A 12-bit collision need not prevent use of the longer, unique hash.
+    let wire = ftdecode::message_encode::encode("W9XYZ <K1AAA/P> -11").unwrap();
+    let message = decoder.unpack(&wire).unwrap();
+    assert_eq!(message.hashes[0].resolved.as_deref(), Some("K1AAA/P"));
+    assert!(!message.hashes[0].ambiguous);
+}
+
+#[test]
+fn invalid_type4_does_not_teach_destination() {
+    let mut decoder = MessageDecoder::default();
+    let mut wire = ftdecode::message_encode::encode("PJ4/K1ABC <W9XYZ> 73").unwrap();
+    wire[73] = true; // A flipped type-4 CQ would name a hashed sender.
+    assert!(decoder.unpack(&wire).is_err());
+    let wire = ftdecode::message_encode::encode("W9XYZ <PJ4/K1ABC> -11").unwrap();
+    assert_eq!(decoder.unpack(&wire).unwrap().hashes[0].resolved, None);
 }

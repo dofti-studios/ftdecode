@@ -2,6 +2,48 @@
 use ftdecode::{message::MessageDecoder, message_encode::encode};
 
 #[test]
+fn multiple_slash_calls_match_native_payloads() {
+    // Generated with the pinned WSJT-X ft8code; includes both type-4 roles and
+    // 22-bit hashed exchanges, so roundtrips cannot hide a packing mismatch.
+    for (text, expected) in [
+        (
+            "CQ EA8/K1ABC/P",
+            "00001111100101010101010010111001100101110010001010011010001101001111000001100",
+        ),
+        (
+            "<W9XYZ> EA8/K1ABC/P RR73",
+            "11110011000101010101010010111001100101110010001010011010001101001111000100100",
+        ),
+        (
+            "EA8/K1ABC/P <W9XYZ> 73",
+            "11110011000101010101010010111001100101110010001010011010001101001111001110100",
+        ),
+        (
+            "W9XYZ <EA8/K1ABC/P> -11",
+            "00001100001010010011101110000000000100011011000101000000000111111010101000001",
+        ),
+        (
+            "<EA8/K1ABC/P> W9XYZ R-09",
+            "00000010001101100010100000000000011000010100100111011100001111111010101010001",
+        ),
+    ] {
+        let bits = encode(text).unwrap();
+        assert_eq!(
+            bits.iter()
+                .map(|&b| if b { '1' } else { '0' })
+                .collect::<String>(),
+            expected,
+            "{text}"
+        );
+        let mut decoder = MessageDecoder::default();
+        for call in ["W9XYZ", "EA8/K1ABC/P"] {
+            decoder.remember_call(call).unwrap();
+        }
+        assert_eq!(decoder.unpack(&bits).unwrap().text, text);
+    }
+}
+
+#[test]
 fn matches_native_packed_bits_and_receive_text() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/message-encode-vectors.json")).unwrap();
@@ -45,6 +87,8 @@ fn rejects_unsupported_fields_and_out_of_range_inputs() {
         "<...> W9XYZ RRR",
         "<ABCDEFGHIJKL> W9XYZ RRR",
         "CQ ABCDEFGHIJKL",
+        "CQ EA8//K1ABC",
+        "W9XYZ <EA8//K1ABC> -11",
         "K1ABC W9XYZ/R/P FN42",
         "CQ K1ABC ☃",
         "K1ABC\0 W9XYZ RRR",

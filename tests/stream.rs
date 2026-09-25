@@ -715,6 +715,7 @@ fn progressive(tail: &str) -> Vec<Value> {
                     grid: None,
                     fields: Default::default(),
                     hashes: vec![ftdecode::message::CallsignHash {
+                        ambiguous: false,
                         width: 22,
                         value: 123,
                         resolved: if pcm[170000] == 0.0 {

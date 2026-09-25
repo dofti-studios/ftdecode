@@ -86,7 +86,7 @@ impl ApSettings {
                 || !normalized.bytes().any(|b| b.is_ascii_digit())
                 || normalized.starts_with('/')
                 || normalized.ends_with('/')
-                || normalized.bytes().filter(|b| *b == b'/').count() > 1
+                || normalized.contains("//")
             {
                 return Err(format!("invalid assistance callsign: {call}"));
             }

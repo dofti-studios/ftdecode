@@ -87,6 +87,16 @@ For contact AP, supply `ap.my_call`, `ap.dx_call`, the appropriate `ap.state`, a
 FT8 can additionally target `ap.tx_hz`; FT4 contact AP uses RX only.
 `ap.dx_grid` supplies context for FT8 a8 list decoding. Known calls seed hash
 resolution even when AP is off; they do not independently add AP trials.
+Compound calls may contain multiple slash-separated components, such as
+`EA8/K1ABC/P`. Empty components are rejected. The encoder and local/remote AP
+calls have an 11-character limit; known-call seeds allow 13 characters, with
+hashing based on the first 11.
+
+Full calls received in either type-4 position teach hash history. Observed hash
+collisions set `CallsignHash.ambiguous` and leave `resolved` and the station's
+`call` absent. Ambiguity persists until reset or 22-bit cache eviction; repeated
+seeds do not override it. FT8 a7 history accepts resolved nonstandard and
+compound calls, while unresolved or ambiguous identities cannot seed it.
 Activity and contact state gate hypotheses, so enabling AP does not guarantee
 an assisted result. The protocol guide contains the full settings table.
 

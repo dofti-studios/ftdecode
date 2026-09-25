@@ -115,10 +115,17 @@ fn call_hints_accept_native_hash_width_and_reject_malformed_delimiters() {
         "<<K1ABC>>",
         "/K1ABC",
         "K1ABC/",
-        "K1/AB/C",
+        "K1ABC//P",
     ] {
         let mut s = DecodeSettings::default();
         s.ap.my_call = Some(call.into());
         assert!(s.validate().is_err(), "{call}");
+    }
+    for call in ["EA8/K1ABC/P", "<ea8/k1abc/p>", "K1/AB/C"] {
+        let mut s = DecodeSettings::default();
+        s.ap.my_call = Some(call.into());
+        s.ap.dx_call = Some(call.into());
+        s.ap.known_calls.push(call.into());
+        assert!(s.validate().is_ok(), "{call}");
     }
 }

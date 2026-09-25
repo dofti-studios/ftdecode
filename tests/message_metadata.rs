@@ -44,6 +44,24 @@ fn named(name: &str) -> Value {
 }
 
 #[test]
+fn hash_ambiguity_is_exposed_in_stream_metadata() {
+    let mut decoder = MessageDecoder::default();
+    let bits = ftdecode::message_encode::encode("<K1AAA/P> PJ4/K1ABC RR73").unwrap();
+    assert_eq!(
+        event(&mut decoder, bits)["recipient_hash"]["ambiguous"],
+        false
+    );
+    for call in ["K1AAA/P", "K1BAP/P"] {
+        decoder.remember_call(call).unwrap();
+    }
+    let e = event(&mut decoder, bits);
+    assert_eq!(e["recipient"], Value::Null);
+    assert_eq!(e["recipient_hash"]["resolved"], Value::Null);
+    assert_eq!(e["recipient_hash"]["ambiguous"], true);
+    assert_eq!(e["recipient_hash"], e["hashes"][0]);
+}
+
+#[test]
 fn standard_exchange_metadata_distinguishes_sequence_steps_and_report_from_snr() {
     for (text, exchange, sender, recipient, grid, report, modifier) in [
         (

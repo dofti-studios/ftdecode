@@ -1069,7 +1069,7 @@ impl Subtractor {
 }
 
 #[cfg(test)]
-fn waveform(tones: &[u8; 79], frequency: f32) -> Vec<C> {
+pub(super) fn waveform(tones: &[u8; 79], frequency: f32) -> Vec<C> {
     let mut wave = Waveform::new();
     wave.generate(tones, frequency);
     wave.samples

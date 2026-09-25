@@ -89,7 +89,7 @@ fn pack(fields: &[(u64, usize)]) -> [bool; 77] {
     bits
 }
 
-fn valid_call(call: &str) -> bool {
+pub(crate) fn valid_call(call: &str) -> bool {
     (3..=11).contains(&call.len())
         && call
             .bytes()
@@ -98,7 +98,7 @@ fn valid_call(call: &str) -> bool {
         && call.bytes().any(|b| b.is_ascii_digit())
         && !call.starts_with('/')
         && !call.ends_with('/')
-        && call.bytes().filter(|&b| b == b'/').count() <= 1
+        && !call.contains("//")
 }
 
 fn bracket_call(call: &str) -> Result<&str, MessageError> {
@@ -109,11 +109,15 @@ fn bracket_call(call: &str) -> Result<&str, MessageError> {
 }
 
 // Native chkcall chooses the longer side of a compound call (the right on ties).
-fn base_call(call: &str) -> Option<&str> {
+pub(crate) fn base_call(call: &str) -> Option<&str> {
     if !valid_call(call) {
         return None;
     }
     let base = if let Some((a, b)) = call.split_once('/') {
+        // Multiple components require the full-call or hashed representation.
+        if b.contains('/') {
+            return None;
+        }
         if a.len().max(b.len()) > 6 {
             return None;
         }

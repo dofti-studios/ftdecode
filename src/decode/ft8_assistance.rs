@@ -9,7 +9,7 @@ use crate::{
     engine::{DecodeDiagnostics, DecodeSettings, DecodedSignal},
     fec,
     fft::{Complex32 as C, ComplexFft, Direction},
-    message::MessageDecoder,
+    message::{ExchangeType, MessageDecoder, MessageKind},
     message_encode, symbols,
 };
 use std::{
@@ -95,8 +95,9 @@ impl Ft8ListDecoder {
         h.slot = Some(slot);
         self.slot = Some(slot);
     }
-    /// Save only standard, fully resolved call pairs, as the native a7 saver
-    /// does. Newly decoded stations suppress their earlier hypotheses.
+    /// Save fully resolved standard and nonstandard exchanges. Unknown or
+    /// ambiguous identities cannot seed hypotheses. Newly decoded stations
+    /// suppress their earlier hypotheses.
     pub fn remember(&mut self, signal: &DecodedSignal) {
         let Some(slot) = self.slot else {
             return;
@@ -106,23 +107,46 @@ impl Ft8ListDecoder {
         {
             return;
         }
-        let text = &signal.message.text;
-        if text.contains(['/', '<', '>']) || text.starts_with("CQ_") {
+        let message = &signal.message;
+        if !matches!(
+            message.kind,
+            MessageKind::Standard | MessageKind::Nonstandard
+        ) || message.fields.cq_modifier.is_some()
+        {
             return;
         }
-        let words: Vec<_> = text.split_whitespace().collect();
-        if words.len() < 2
-            || (words[0] != "CQ" && !standard_call(words[0]))
-            || !standard_call(words[1])
+        let Some(call2) = message
+            .fields
+            .sender
+            .as_ref()
+            .and_then(|s| s.call.as_deref())
+        else {
+            return;
+        };
+        let call1 = if message.fields.exchange_type == Some(ExchangeType::Cq) {
+            "CQ"
+        } else if let Some(call) = message
+            .fields
+            .recipient
+            .as_ref()
+            .and_then(|s| s.call.as_deref())
+        {
+            call
+        } else {
+            return;
+        };
+        if (call1 != "CQ" && !message_encode::valid_call(call1))
+            || !message_encode::valid_call(call2)
         {
             return;
         }
         let entry = History {
-            call1: words[0].into(),
-            call2: words[1].into(),
-            grid: words
-                .last()
-                .filter(|w| grid4(w))
+            call1: call1.into(),
+            call2: call2.into(),
+            grid: message
+                .grid
+                .as_deref()
+                .filter(|g| grid4(g))
                 .map_or(String::new(), |w| w.to_string()),
             frequency: signal.frequency_hz,
             dt: signal.dt_seconds,
@@ -333,7 +357,10 @@ impl Ft8ListDecoder {
             || distance > 100.0
             || second < 1.3 * distance
             || hypothesis.text.starts_with("QU1RK ")
-            || (hypothesis.text.starts_with("CQ ") && h.grid.is_empty())
+            || hypothesis.text.starts_with("<QU1RK> ")
+            || (hypothesis.text.starts_with("CQ ")
+                && h.grid.is_empty()
+                && hypothesis.bits[74..] != [true, false, false])
         {
             return Ok(None);
         }
@@ -574,14 +601,27 @@ fn standard_call(call: &str) -> bool {
             <= 3
 }
 fn hypotheses(call1: &str, call2: &str, grid: &str, a8: bool) -> Vec<Hypothesis> {
-    let first_std = call1 == "CQ" || standard_call(call1);
-    let second_std = standard_call(call2);
+    let is_standard = |call: &str| {
+        if a8 {
+            standard_call(call)
+        } else {
+            let base = call
+                .strip_suffix("/P")
+                .or_else(|| call.strip_suffix("/R"))
+                .unwrap_or(call);
+            message_encode::base_call(base) == Some(base)
+        }
+    };
+    let first_std = call1 == "CQ" || is_standard(call1);
+    let second_std = is_standard(call2);
     let mut result = Vec::with_capacity(206);
     for i in 1..=206 {
+        let call1 = if !a8 && call1 == "CQ" && i != 5 {
+            "QU1RK"
+        } else {
+            call1
+        };
         let mut prefix = format!("{call1} {call2}");
-        if !a8 && call1 == "CQ" && i != 5 {
-            prefix = format!("QU1RK {call2}");
-        }
         if !first_std {
             if i == 1 || i >= 6 {
                 prefix = format!("<{}> {call2}", call1.trim_matches(['<', '>']));
@@ -660,6 +700,12 @@ fn hypotheses(call1: &str, call2: &str, grid: &str, a8: bool) -> Vec<Hypothesis>
             codeword,
             tones,
         });
+    }
+    if !a8 {
+        // Bare calls and a missing grid can produce the same payload. They
+        // must not compete with themselves in the runner-up distance check.
+        let mut seen = std::collections::HashSet::new();
+        result.retain(|h| seen.insert(h.bits));
     }
     result
 }
@@ -838,14 +884,105 @@ mod tests {
         );
     }
     #[test]
-    fn unknown_and_compound_calls_do_not_seed_a7() {
+    fn unresolved_calls_and_unclassified_messages_do_not_seed_a7() {
         let mut decoder = Ft8ListDecoder::new();
         decoder.begin_slot(0);
         let mut signal = station(1500.0);
-        for text in ["CQ <...> FN42", "CQ PJ4/K1ABC", "CQ DX K1ABC FN42"] {
-            signal.message.text = text.into();
+        for text in ["W9XYZ <PJ4/K1ABC> -11", "CQ DX K1ABC FN42"] {
+            let bits = message_encode::encode(text).unwrap();
+            signal.message = MessageDecoder::default().unpack(&bits).unwrap();
             decoder.remember(&signal);
         }
+        signal.message = station(1500.0).message;
+        signal.message.kind = MessageKind::FreeText;
+        decoder.remember(&signal);
+        let mut messages = MessageDecoder::default();
+        for call in ["K1AAA/P", "K1BAP/P"] {
+            messages.remember_call(call).unwrap();
+        }
+        let bits = message_encode::encode("<K1AAA/P> PJ4/K1ABC RR73").unwrap();
+        signal.message = messages.unpack(&bits).unwrap();
+        assert!(signal.message.hashes[0].ambiguous);
+        decoder.remember(&signal);
         assert!(decoder.history[0].current.is_empty());
+    }
+
+    #[test]
+    fn a7_recovers_resolved_nonstandard_calls_and_rejects_noise() {
+        let raw = include_bytes!("../../tests/fixtures/ft8-noise.wav");
+        let noise: Vec<f32> = raw[44..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b) as f32)
+            .collect();
+        let mut settings = DecodeSettings {
+            assistance: true,
+            ..Default::default()
+        };
+        settings.ap.mode = ApMode::Auto;
+        let cancel = AtomicBool::new(false);
+        for text in [
+            "CQ EA8/K1ABC/P",
+            "<W9XYZ> EA8/K1ABC/P RR73",
+            "EA8/K1ABC/P <W9XYZ> 73",
+            "W9XYZ <EA8/K1ABC/P> -11",
+            "<EA8/K1ABC/P> W9XYZ R-09",
+            "CQ G4ABC/P IO91",
+            "W9XYZ G4ABC/P RR73",
+        ] {
+            let mut messages = MessageDecoder::default();
+            for call in ["W9XYZ", "EA8/K1ABC/P"] {
+                messages.remember_call(call).unwrap();
+            }
+            let bits = message_encode::encode(text).unwrap();
+            let mut prior = station(1500.0);
+            prior.source_bits = bits;
+            prior.message = messages.unpack(&bits).unwrap();
+            let tones = symbols::ft8(&fec::encode(&bits));
+            let mut audio = noise.clone();
+            // Use the GFSK generator already checked against independent native
+            // waveform samples, with deterministic noise and a -10 dB signal.
+            for (i, sample) in super::super::ft8::waveform(&tones, 1500.0)
+                .iter()
+                .enumerate()
+            {
+                audio[6000 + i] += 29.0 * sample.im;
+            }
+            let mut decoder = Ft8ListDecoder::new();
+            decoder.begin_slot(0);
+            decoder.remember(&prior);
+            assert_eq!(decoder.history[0].current.len(), 1, "{text}");
+            decoder.begin_slot(2);
+            assert!(
+                decoder
+                    .decode(&noise, &settings, &mut messages, &cancel)
+                    .unwrap()
+                    .is_empty(),
+                "{text}: noise"
+            );
+            let found = decoder
+                .decode(&audio, &settings, &mut messages, &cancel)
+                .unwrap();
+            assert_eq!(
+                found.len(),
+                1,
+                "{text}: {:?}",
+                found.iter().map(|c| &c.signal).collect::<Vec<_>>()
+            );
+            assert_eq!(found[0].signal.message.text, text);
+            assert_eq!(
+                found[0].signal.diagnostics.as_ref().unwrap().ap_type,
+                Some(7)
+            );
+            decoder.reset();
+            decoder.begin_slot(4);
+            assert!(
+                decoder
+                    .decode(&audio, &settings, &mut messages, &cancel)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 }

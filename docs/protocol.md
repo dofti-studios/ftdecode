@@ -149,7 +149,9 @@ other call and target proximity. FT8 accepts RX or TX proximity; FT4 uses RX onl
 Fox activity disables these AP hypotheses. FT4 disables them for fox, hound and
 arrl-digi. FT8 hound hypotheses are restricted to frequencies at or below 950 Hz,
 use special call-context gates, bypass ordinary target proximity and omit type 5.
-FT8 a7/a8 lists are disabled for fox/hound. a7 uses learned resolved stations;
+FT8 a7/a8 lists are disabled for fox/hound. a7 accepts learned, resolved
+standard and nonstandard station identities, including
+compound calls. Unresolved or ambiguous hashes do not seed its history.
 a8 needs RX frequency, both calls and the other station's grid. Known-call seeds
 help resolve hashes even with AP off but do not independently add AP trials.
 These are receive hints; no radio control or contact sequencing is performed.
@@ -198,7 +200,11 @@ start), `assisted` (boolean), and `window_start_sample` (12 kHz sample index str
 It also carries `exchange_type`, `sender`, `recipient`, `sender_hash`,
 `recipient_hash`, `cq_modifier`, `grid`, `report_db`, and `hashes`. These metadata
 fields may be null when absent, unresolved or unclassified; `hashes` is an array.
-Each hash object has integer `width`/`value` and nullable string `resolved`.
+Each hash object has integer `width`/`value`, nullable string `resolved`, and
+boolean `ambiguous`. When distinct observed calls share a hash, `ambiguous` is
+true and `resolved` is null; displayed text uses `<...>`. Re-seeding a call does
+not clear ambiguity. Reset clears all history; 22-bit entries can also be
+evicted from the 1,000-entry cache. Unknown hashes have `ambiguous: false`.
 `report_db` describes the transmitted standard-message report, not receive SNR.
 
 `window_start_utc_ns` is included on decodes only when UTC timing is available.

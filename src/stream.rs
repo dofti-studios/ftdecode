@@ -87,7 +87,7 @@ pub fn signal_json(
     window_start: u64,
     utc: Option<u64>,
 ) -> Value {
-    let hash_json = |h: &crate::message::CallsignHash| json!({"width":h.width,"value":h.value,"resolved":h.resolved});
+    let hash_json = |h: &crate::message::CallsignHash| json!({"width":h.width,"value":h.value,"resolved":h.resolved,"ambiguous":h.ambiguous});
     let hashes: Vec<_> = signal.message.hashes.iter().map(hash_json).collect();
     let fields = &signal.message.fields;
     let sender = fields.sender.as_ref();

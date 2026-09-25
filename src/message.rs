@@ -76,6 +76,9 @@ impl ExchangeType {
 pub struct CallsignHash {
     pub width: u8,
     pub value: u32,
+    /// Multiple distinct calls have been observed for this hash. Such hashes
+    /// remain unresolved until history is reset or the entry is evicted.
+    pub ambiguous: bool,
     pub resolved: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,14 +141,31 @@ pub enum MessageError {
     InvalidCallsign,
 }
 
-/// Receive-local callsign history. Ten/twelve-bit slots use the latest call;
-/// the 22-bit history retains at most 1,000 distinct hashes, as in WSJT-X.
+#[derive(Clone)]
+struct HashEntry {
+    call: String,
+    ambiguous: bool,
+}
+impl HashEntry {
+    fn new(call: &str) -> Self {
+        Self {
+            call: call.to_owned(),
+            ambiguous: false,
+        }
+    }
+    fn observe(&mut self, call: &str) {
+        self.ambiguous |= self.call != call;
+    }
+}
+
+/// Receive-local callsign history. Colliding calls leave a hash unresolved.
+/// The 22-bit history retains at most 1,000 distinct hashes, as in WSJT-X.
 /// No process-global state or station-specific override is used.
 #[derive(Clone)]
 pub struct MessageDecoder {
-    calls10: Vec<Option<String>>,
-    calls12: Vec<Option<String>>,
-    calls22: VecDeque<(u32, String)>,
+    calls10: Vec<Option<HashEntry>>,
+    calls12: Vec<Option<HashEntry>>,
+    calls22: VecDeque<(u32, HashEntry)>,
 }
 impl Default for MessageDecoder {
     fn default() -> Self {
@@ -174,11 +194,21 @@ impl MessageDecoder {
         if message.text.starts_with("CQ <") {
             return Err(MessageError::InvalidField);
         }
-        // Receive text has the same 37-character envelope as the wire codec.
-        message.text.truncate(37);
         for call in learned {
             self.remember_call(&call)?;
         }
+        // A full call in this very message can reveal a collision with its
+        // hashed peer. Refresh the display and role metadata in that case.
+        if message.hashes.iter().any(|h| {
+            !h.ambiguous
+                && self
+                    .hash_entry(h.value, h.width)
+                    .is_some_and(|entry| entry.ambiguous)
+        }) {
+            message = self.parse(bits)?.0;
+        }
+        // Receive text has the same 37-character envelope as the wire codec.
+        message.text.truncate(37);
         Ok(message)
     }
 
@@ -197,12 +227,17 @@ impl MessageDecoder {
             (mixed >> 52) as u32,
             (mixed >> 42) as u32,
         ];
-        self.calls10[hashes[0] as usize] = Some(call.clone());
-        self.calls12[hashes[1] as usize] = Some(call.clone());
+        for slot in [
+            &mut self.calls10[hashes[0] as usize],
+            &mut self.calls12[hashes[1] as usize],
+        ] {
+            slot.get_or_insert_with(|| HashEntry::new(&call))
+                .observe(&call);
+        }
         if let Some(entry) = self.calls22.iter_mut().find(|e| e.0 == hashes[2]) {
-            entry.1 = call;
+            entry.1.observe(&call);
         } else {
-            self.calls22.push_front((hashes[2], call));
+            self.calls22.push_front((hashes[2], HashEntry::new(&call)));
             self.calls22.truncate(1000);
         }
         Ok(hashes)
@@ -213,21 +248,24 @@ impl MessageDecoder {
         self.calls22.clear();
     }
 
-    fn hashed(&self, value: u32, width: u8, hashes: &mut Vec<CallsignHash>) -> String {
-        let resolved = match width {
-            10 => self.calls10[value as usize].clone(),
-            12 => self.calls12[value as usize].clone(),
-            22 => self
-                .calls22
-                .iter()
-                .find(|e| e.0 == value)
-                .map(|e| e.1.clone()),
+    fn hash_entry(&self, value: u32, width: u8) -> Option<&HashEntry> {
+        match width {
+            10 => self.calls10[value as usize].as_ref(),
+            12 => self.calls12[value as usize].as_ref(),
+            22 => self.calls22.iter().find(|e| e.0 == value).map(|e| &e.1),
             _ => unreachable!("wire hash widths are fixed"),
-        };
+        }
+    }
+
+    fn hashed(&self, value: u32, width: u8, hashes: &mut Vec<CallsignHash>) -> String {
+        let entry = self.hash_entry(value, width);
+        let ambiguous = entry.is_some_and(|e| e.ambiguous);
+        let resolved = entry.filter(|e| !e.ambiguous).map(|e| e.call.clone());
         let text = format!("<{}>", resolved.as_deref().unwrap_or("..."));
         hashes.push(CallsignHash {
             width,
             value,
+            ambiguous,
             resolved,
         });
         text
@@ -549,10 +587,10 @@ impl MessageDecoder {
                     .trim()
                     .to_owned();
                 normalize_call(&call)?;
+                learned.push(call.clone());
                 let (a, b) = if bits[70] {
                     (call, hashed)
                 } else {
-                    learned.push(call.clone());
                     (hashed, call)
                 };
                 if bits[73] {
