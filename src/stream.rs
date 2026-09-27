@@ -92,7 +92,30 @@ pub fn signal_json(
     let fields = &signal.message.fields;
     let sender = fields.sender.as_ref();
     let recipient = fields.recipient.as_ref();
-    let mut value = json!({"type":"decode","message":signal.message.text,
+    let station_json = |s: &Option<crate::message::Station>| {
+        s.as_ref()
+            .map(|s| json!({"call":s.call,"hash":s.hash.as_ref().map(hash_json)}))
+    };
+    use crate::message::ContestExchange;
+    let contest = fields.contest.as_ref().map(|c| match c {
+        ContestExchange::FieldDay { roger, transmitters, class, section } =>
+            json!({"kind":"field_day","roger":roger,"transmitters":transmitters,"class":class,"section":section}),
+        ContestExchange::Roundup { roger, thank_you, rst, serial, multiplier } =>
+            json!({"kind":"rtty","roger":roger,"thank_you":thank_you,"rst":rst,"serial":serial,"multiplier":multiplier}),
+        ContestExchange::Vhf { roger, rs, serial, grid } =>
+            json!({"kind":"vhf","roger":roger,"rs":rs,"serial":serial,"grid":grid}),
+        ContestExchange::Dxpedition { acknowledged, addressed, report_db } =>
+            json!({"kind":"dxpedition","acknowledged":station_json(acknowledged),"addressed":station_json(addressed),"report_db":report_db}),
+    });
+    let primary = signal.source_bits[74..]
+        .iter()
+        .fold(0u8, |n, b| n * 2 + u8::from(*b));
+    let subtype = (primary == 0).then(|| {
+        signal.source_bits[71..74]
+            .iter()
+            .fold(0u8, |n, b| n * 2 + u8::from(*b))
+    });
+    let mut value = json!({"type":"decode","metadata_version":2,"primary_type":primary,"subtype":subtype,"contest":contest,"message":signal.message.text,
         "message_type":signal.message.kind.name(),
         "exchange_type":fields.exchange_type.map(crate::message::ExchangeType::name),
         "sender":sender.and_then(|s| s.call.as_deref()),
@@ -347,7 +370,10 @@ fn serve_internal<R: Read + Send + 'static, W: Write + Send + 'static, B: Backen
                     published = None;
                     context = float_pcm.then_some((mode, utc, options.stats));
                     backend.reset(mode);
-                    protocol::write_frame(&mut writer, &json!({"type":"ok","command":command}))?;
+                    protocol::write_frame(
+                        &mut writer,
+                        &json!({"type":"ok","command":command,"metadata_version":2}),
+                    )?;
                 }
                 Work::Finish => {
                     protocol::write_frame(&mut writer, &json!({"type":"ok","command":"finish"}))?;

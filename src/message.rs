@@ -114,10 +114,40 @@ impl Station {
     }
 }
 
+/// Structured contest fields recovered from the payload, never display text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContestExchange {
+    FieldDay {
+        roger: bool,
+        transmitters: u8,
+        class: char,
+        section: String,
+    },
+    Roundup {
+        roger: bool,
+        thank_you: bool,
+        rst: u16,
+        serial: Option<u16>,
+        multiplier: Option<String>,
+    },
+    Vhf {
+        roger: bool,
+        rs: u8,
+        serial: u16,
+        grid: String,
+    },
+    Dxpedition {
+        acknowledged: Option<Station>,
+        addressed: Option<Station>,
+        report_db: i32,
+    },
+}
+
 /// Fields recovered during unpacking. Unclassified formats retain null exchange
 /// metadata rather than deriving sequencing instructions from displayed text.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MessageFields {
+    pub contest: Option<ContestExchange>,
     pub exchange_type: Option<ExchangeType>,
     pub sender: Option<Station>,
     pub recipient: Option<Station>,
@@ -353,8 +383,16 @@ impl MessageDecoder {
                     return Err(MessageError::InvalidField);
                 }
                 let a = self.call28(get(0, 28), &mut hashes)?;
+                let acknowledged = Station::from_field(&a, hashes.last());
                 let b = self.call28(get(28, 28), &mut hashes)?;
+                let addressed = Station::from_field(&b, hashes.last());
                 let c = self.hashed(get(56, 10), 10, &mut hashes);
+                fields.sender = Station::from_field(&c, hashes.last());
+                fields.contest = Some(ContestExchange::Dxpedition {
+                    acknowledged,
+                    addressed,
+                    report_db: 2 * get(66, 5) as i32 - 30,
+                });
                 text = format!("{a} RR73; {b} {c} {:+03}", 2 * get(66, 5) as i32 - 30);
             }
             (0, 3 | 4) => {
@@ -372,6 +410,12 @@ impl MessageDecoder {
                     .checked_sub(1)
                     .and_then(|i| tables::CSEC.get(i as usize))
                     .ok_or(MessageError::InvalidField)?;
+                fields.contest = Some(ContestExchange::FieldDay {
+                    roger: bits[56],
+                    transmitters: count as u8,
+                    class,
+                    section: (*section).into(),
+                });
                 text = format!(
                     "{a} {b} {}{count}{class} {section}",
                     if bits[56] { "R " } else { "" }
@@ -564,6 +608,16 @@ impl MessageDecoder {
                 let b = self.call28(get(29, 28), &mut hashes)?;
                 fields.sender = Station::from_field(&b, hashes.last());
                 let exchange = get(61, 13);
+                fields.contest = Some(ContestExchange::Roundup {
+                    roger: bits[57],
+                    thank_you: bits[0],
+                    rst: (529 + 10 * get(58, 3)) as u16,
+                    serial: (1..=7999).contains(&exchange).then_some(exchange as u16),
+                    multiplier: exchange
+                        .checked_sub(8001)
+                        .and_then(|i| tables::CMULT.get(i as usize))
+                        .map(|s| (*s).into()),
+                });
                 let exchange = match exchange {
                     1..=7999 => format!("{exchange:04}"),
                     8001..=8171 => tables::CMULT[(exchange - 8001) as usize].to_owned(),
@@ -620,6 +674,12 @@ impl MessageDecoder {
                 let b = self.hashed(get(12, 22), 22, &mut hashes);
                 fields.sender = Station::from_field(&b, hashes.last());
                 let g = grid_text(get(49, 25), true)?;
+                fields.contest = Some(ContestExchange::Vhf {
+                    roger: bits[34],
+                    rs: (52 + get(35, 3)) as u8,
+                    serial: get(38, 11) as u16,
+                    grid: g.clone(),
+                });
                 text = format!(
                     "{a} {b} {}{}{:04} {g}",
                     if bits[34] { "R " } else { "" },

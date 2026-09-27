@@ -409,3 +409,31 @@ fn address_token_suffix_bits_do_not_create_callsign_recipients() {
         }
     }
 }
+
+#[test]
+fn contest_fields_are_payload_derived_and_preserve_roles() {
+    let e = named("W9XYZ K1ABC R 17B EMA");
+    assert_eq!(e["metadata_version"], 2);
+    assert_eq!(e["primary_type"], 0);
+    assert_eq!(e["subtype"], 4);
+    assert_eq!(
+        e["contest"],
+        json!({"kind":"field_day","roger":true,"transmitters":17,"class":"B","section":"EMA"})
+    );
+    let e = named("TU; KA0DEF K1ABC R 569 MA");
+    assert_eq!(
+        e["contest"],
+        json!({"kind":"rtty","roger":true,"thank_you":true,"rst":569,"serial":null,"multiplier":"MA"})
+    );
+    let e = named("<PA9XYZ> <G4ABC/P> 570123 IO91NP (known hashes)");
+    assert_eq!(
+        e["contest"],
+        json!({"kind":"vhf","roger":false,"rs":57,"serial":123,"grid":"IO91NP"})
+    );
+    let e = named("K1ABC RR73; W9XYZ <KH1/KH7Z> -08 (known hashes)");
+    assert_eq!(e["sender"], "KH1/KH7Z");
+    assert_eq!(e["contest"]["acknowledged"]["call"], "K1ABC");
+    assert_eq!(e["contest"]["addressed"]["call"], "W9XYZ");
+    assert_eq!(e["contest"]["report_db"], -8);
+    assert_eq!(e["sender_hash"]["width"], 10);
+}

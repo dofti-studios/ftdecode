@@ -194,6 +194,30 @@ Python example clears its short handshake timeout for this reason.
 have zero messages. Skipped can retain an already published early decode; inspect
 both status and count. Human-readable reasons are diagnostics, not machine enums.
 
+Start/reset acknowledgments and each decode advertise `metadata_version: 2`.
+Version 2 adds lossless contact exchange fields; the framing and message text
+remain compatible with older clients. Consumers must ignore unknown fields.
+`primary_type` is the payload's three-bit primary selector. `subtype` is the
+three-bit subtype for primary zero and null otherwise.
+
+`contest` is null for ordinary messages, free text, telemetry, and beacons.
+Structured contest/DXpedition messages carry a tagged object:
+
+| `kind` | Fields |
+| --- | --- |
+| `field_day` | `roger`, `transmitters` (1–32), `class` (A–H), `section` |
+| `rtty` | `roger`, `thank_you`, `rst`, `serial` or `multiplier` (the other is null) |
+| `vhf` | `roger`, `rs`, `serial`, six-character `grid` |
+| `dxpedition` | `acknowledged`, `addressed`, `report_db` |
+
+Each DXpedition recipient is a nullable `{call, hash}` station object; the hash
+uses the same ambiguity/resolution schema as `sender_hash`. `acknowledged` is
+the station receiving RR73, while `addressed` receives the report. The top-level
+sender is the Fox. Neither recipient is silently promoted to sender. Unknown or
+ambiguous identities stay unresolved. All exchange fields come from payload
+bits, not by reparsing the displayed message. This interface supplies facts only;
+client applications own reply eligibility, activity choice, sequencing, and TX.
+
 Every decode carries `mode`, `message`, `message_type`, `frequency_hz` (audio Hz),
 `snr_db` (estimated receive SNR), `dt_seconds` (offset from nominal mode transmit
 start), `assisted` (boolean), and `window_start_sample` (12 kHz sample index string).
