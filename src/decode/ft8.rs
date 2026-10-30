@@ -91,6 +91,18 @@ impl Ft8Decoder {
         self.slot = Some(slot);
     }
 
+    pub(super) fn take_list_history(&mut self) -> Option<super::ft8_assistance::ListHistory> {
+        self.lists
+            .as_mut()
+            .map(|lists| std::mem::take(&mut lists.history))
+    }
+
+    pub(super) fn set_list_history(&mut self, history: super::ft8_assistance::ListHistory) {
+        self.lists
+            .get_or_insert_with(super::ft8_assistance::Ft8ListDecoder::new)
+            .history = history;
+    }
+
     pub fn decode(
         &mut self,
         pcm: &[f32],

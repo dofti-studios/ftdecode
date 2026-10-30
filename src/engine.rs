@@ -161,9 +161,8 @@ impl DecodeSettings {
 /// Per-stream decoder and callsign history. Reuse this for successive windows.
 pub struct Decoder {
     mode: Mode,
-    ft8: Option<crate::decode::ft8::Ft8Decoder>,
+    ft8: Option<crate::decode::parallel_ft8::ParallelFt8Decoder>,
     ft4: Option<crate::decode::ft4::Ft4Decoder>,
-    parallel_ft8: Option<crate::decode::parallel_ft8::ParallelFt8Decoder>,
     slot_context: Option<u64>,
     next_slot: u64,
     messages: crate::message::MessageDecoder,
@@ -175,7 +174,6 @@ impl Decoder {
             mode,
             ft8: None,
             ft4: None,
-            parallel_ft8: None,
             slot_context: None,
             next_slot: 0,
             messages: crate::message::MessageDecoder::default(),
@@ -193,7 +191,6 @@ impl Decoder {
         self.messages.reset();
         self.ft8 = None;
         self.ft4 = None;
-        self.parallel_ft8 = None;
         self.slot_context = None;
         self.next_slot = 0;
     }
@@ -261,8 +258,8 @@ impl Decoder {
         let slot = self.slot_context.take().unwrap_or(self.next_slot);
         self.next_slot = slot.saturating_add(1);
         match self.mode {
-            Mode::Ft8 if settings.threads > 1 => {
-                let decoder = self.parallel_ft8.get_or_insert_with(|| {
+            Mode::Ft8 => {
+                let decoder = self.ft8.get_or_insert_with(|| {
                     let mut d = crate::decode::parallel_ft8::ParallelFt8Decoder::new();
                     d.filtered_input = self.filtered_input;
                     d
@@ -275,15 +272,6 @@ impl Decoder {
                     on_decode,
                     Some(slot),
                 )
-            }
-            Mode::Ft8 => {
-                let decoder = self.ft8.get_or_insert_with(|| {
-                    let mut d = crate::decode::ft8::Ft8Decoder::new();
-                    d.filtered_input = self.filtered_input;
-                    d
-                });
-                decoder.set_slot(slot);
-                decoder.decode(pcm, settings, &mut self.messages, cancel, on_decode)
             }
             Mode::Ft4 => self
                 .ft4

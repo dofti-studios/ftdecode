@@ -94,6 +94,66 @@ fn finish(bytes: &mut Vec<u8>) {
 }
 
 #[test]
+fn configure_preserves_real_ft8_list_history() {
+    let pcm = |raw: &[u8]| -> Vec<f32> {
+        raw[44..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| f32::from(i16::from_le_bytes(*b)))
+            .collect()
+    };
+    let clean = pcm(include_bytes!("fixtures/ft8-clean.wav"));
+    let noise = pcm(include_bytes!("fixtures/ft8-noise.wav"));
+    let weak: Vec<_> = clean.iter().zip(noise).map(|(c, n)| c * 0.2 + n).collect();
+    let mut input = Vec::new();
+    frame(
+        &mut input,
+        json!({"type":"start","version":1,"mode":"ft8","operation":"offline",
+            "slot_offset_samples":"0","settings":{"ap":"auto","depth":1,"threads":2}}),
+        &[],
+    );
+    for (slot, audio, threads) in [(0, &clean, 2), (2, &weak, 4), (4, &weak, 1)] {
+        frame(
+            &mut input,
+            json!({"type":"configure","settings":{"threads":threads}}),
+            &[],
+        );
+        for (chunk, samples) in audio.chunks(6000).enumerate() {
+            let payload: Vec<_> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let first = slot * 180000 + chunk * 6000;
+            frame(
+                &mut input,
+                json!({"type":"audio","first_sample":first.to_string(),"sample_count":samples.len()}),
+                &payload,
+            );
+        }
+    }
+    finish(&mut input);
+    let output = Capture::default();
+    ftdecode::stream::serve_wav(Cursor::new(input), output.clone(), Default::default()).unwrap();
+    let mut bytes = Cursor::new(output.0.lock().unwrap().clone());
+    let mut decodes = Vec::new();
+    let mut counts = Vec::new();
+    while let Some(frame) = read_frame(&mut bytes).unwrap() {
+        let event = frame.header;
+        assert_ne!(event["type"], "error", "{event}");
+        if event["type"] == "decode" {
+            decodes.push(event);
+        } else if event["type"] == "done" {
+            assert_eq!(event["status"], "completed", "{event}");
+            counts.push(event["message_count"].as_u64().unwrap());
+        }
+    }
+    assert_eq!(counts, [1, 1, 1]);
+    assert_eq!(decodes.len(), 3);
+    for signal in &decodes[1..] {
+        assert_eq!(signal["message"], "CQ K1ABC FN42");
+        assert_eq!(signal["ap_type"], 7);
+    }
+}
+
+#[test]
 fn stream_ap_is_off_unless_explicitly_enabled() {
     use ftdecode::assistance::ApMode;
     struct ApCapture(Arc<Mutex<Vec<ApMode>>>);

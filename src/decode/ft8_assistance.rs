@@ -29,7 +29,7 @@ struct History {
     dt: f32,
     available: bool,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ParityHistory {
     slot: Option<u64>,
     current: Vec<History>,
@@ -43,46 +43,21 @@ pub struct AssistedCandidate {
     pub start: f32,
 }
 
-pub struct Ft8ListDecoder {
+/// Stream history is cheap to snapshot independently of each worker's DSP.
+#[derive(Clone, Default)]
+pub(super) struct ListHistory {
     slot: Option<u64>,
-    history: [ParityHistory; 2],
-    down: Ft8Downsampler,
-    symbol: ComplexFft,
-    dechirp: ComplexFft,
-    waveform: ListWaveform,
+    parities: [ParityHistory; 2],
 }
-impl Default for Ft8ListDecoder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl Ft8ListDecoder {
-    pub fn new() -> Self {
-        Self {
-            slot: None,
-            history: Default::default(),
-            down: Ft8Downsampler::new(),
-            symbol: ComplexFft::new(32, Direction::Forward).unwrap(),
-            dechirp: ComplexFft::new(3200, Direction::Forward).unwrap(),
-            waveform: ListWaveform::new(),
-        }
-    }
-    /// Invalidate station history without discarding reusable FFT plans.
-    pub fn reset(&mut self) {
-        self.slot = None;
-        self.history = Default::default();
-    }
-    /// Identity counts 15-second FT8 periods, including periods not decoded.
-    /// Backwards jumps and gaps beyond one opposite-parity period
-    /// invalidate history. Repeating an identity is an early/final update.
-    pub fn begin_slot(&mut self, slot: u64) {
+impl ListHistory {
+    pub(super) fn begin_slot(&mut self, slot: u64) {
         if self.slot == Some(slot) {
             return;
         }
         if self.slot.is_some_and(|old| slot < old || slot - old > 2) {
-            self.reset();
+            *self = Self::default();
         }
-        let h = &mut self.history[(slot % 2) as usize];
+        let h = &mut self.parities[(slot % 2) as usize];
         h.previous = if h.slot.is_some_and(|old| old.checked_add(2) == Some(slot)) {
             std::mem::take(&mut h.current)
         } else {
@@ -95,10 +70,7 @@ impl Ft8ListDecoder {
         h.slot = Some(slot);
         self.slot = Some(slot);
     }
-    /// Save fully resolved standard and nonstandard exchanges. Unknown or
-    /// ambiguous identities cannot seed hypotheses. Newly decoded stations
-    /// suppress their earlier hypotheses.
-    pub fn remember(&mut self, signal: &DecodedSignal) {
+    pub(super) fn remember(&mut self, signal: &DecodedSignal) {
         let Some(slot) = self.slot else {
             return;
         };
@@ -152,7 +124,7 @@ impl Ft8ListDecoder {
             dt: signal.dt_seconds,
             available: true,
         };
-        let h = &mut self.history[(slot % 2) as usize];
+        let h = &mut self.parities[(slot % 2) as usize];
         for old in &mut h.previous {
             if old.call2 == entry.call2 && (old.frequency - entry.frequency).abs() <= 3.0 {
                 old.available = false;
@@ -167,6 +139,46 @@ impl Ft8ListDecoder {
         {
             h.current.push(entry);
         }
+    }
+}
+
+pub struct Ft8ListDecoder {
+    pub(super) history: ListHistory,
+    down: Ft8Downsampler,
+    symbol: ComplexFft,
+    dechirp: ComplexFft,
+    waveform: ListWaveform,
+}
+impl Default for Ft8ListDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Ft8ListDecoder {
+    pub fn new() -> Self {
+        Self {
+            history: ListHistory::default(),
+            down: Ft8Downsampler::new(),
+            symbol: ComplexFft::new(32, Direction::Forward).unwrap(),
+            dechirp: ComplexFft::new(3200, Direction::Forward).unwrap(),
+            waveform: ListWaveform::new(),
+        }
+    }
+    /// Invalidate station history without discarding reusable FFT plans.
+    pub fn reset(&mut self) {
+        self.history = ListHistory::default();
+    }
+    /// Identity counts 15-second FT8 periods, including periods not decoded.
+    /// Backwards jumps and gaps beyond one opposite-parity period
+    /// invalidate history. Repeating an identity is an early/final update.
+    pub fn begin_slot(&mut self, slot: u64) {
+        self.history.begin_slot(slot);
+    }
+    /// Save fully resolved standard and nonstandard exchanges. Unknown or
+    /// ambiguous identities cannot seed hypotheses. Newly decoded stations
+    /// suppress their earlier hypotheses.
+    pub fn remember(&mut self, signal: &DecodedSignal) {
+        self.history.remember(signal);
     }
     pub fn decode(
         &mut self,
@@ -199,8 +211,9 @@ impl Ft8ListDecoder {
             return Ok(result);
         }
         let history = self
+            .history
             .slot
-            .map(|slot| self.history[(slot % 2) as usize].previous.clone())
+            .map(|slot| self.history.parities[(slot % 2) as usize].previous.clone())
             .unwrap_or_default();
         let target = settings
             .priority_hz
@@ -220,10 +233,9 @@ impl Ft8ListDecoder {
             }
             // Saving an a7 result can suppress later entries from this same
             // transmitter. Consult the live table, not the cloned snapshot.
-            if self
-                .slot
-                .is_some_and(|slot| !self.history[(slot % 2) as usize].previous[index].available)
-            {
+            if self.history.slot.is_some_and(|slot| {
+                !self.history.parities[(slot % 2) as usize].previous[index].available
+            }) {
                 continue;
             }
             if !(settings.low_hz - 2.5..=settings.high_hz + 2.5).contains(&h.frequency) {
@@ -235,8 +247,8 @@ impl Ft8ListDecoder {
             }
         }
         if let Some((((frequency, mycall), dxcall), grid)) = target {
-            let already = self.slot.is_some_and(|slot| {
-                self.history[(slot % 2) as usize]
+            let already = self.history.slot.is_some_and(|slot| {
+                self.history.parities[(slot % 2) as usize]
                     .current
                     .iter()
                     .any(|h| h.call2 == dxcall || h.call1 == dxcall)
@@ -887,13 +899,14 @@ mod tests {
                 decoder.remember(&station(300.0 + i as f32 * 4.0));
             }
             assert_eq!(
-                decoder.history[(slot % 2) as usize].current.len(),
+                decoder.history.parities[(slot % 2) as usize].current.len(),
                 MAX_HISTORY
             );
         }
         assert!(
             decoder
                 .history
+                .parities
                 .iter()
                 .all(|h| h.current.len() == MAX_HISTORY && h.previous.len() == MAX_HISTORY)
         );
@@ -901,6 +914,7 @@ mod tests {
         assert!(
             decoder
                 .history
+                .parities
                 .iter()
                 .all(|h| h.current.is_empty() && h.previous.is_empty())
         );
@@ -926,7 +940,7 @@ mod tests {
         signal.message = messages.unpack(&bits).unwrap();
         assert!(signal.message.hashes[0].ambiguous);
         decoder.remember(&signal);
-        assert!(decoder.history[0].current.is_empty());
+        assert!(decoder.history.parities[0].current.is_empty());
     }
 
     #[test]
@@ -987,7 +1001,7 @@ mod tests {
             let mut decoder = Ft8ListDecoder::new();
             decoder.begin_slot(0);
             decoder.remember(&prior);
-            assert_eq!(decoder.history[0].current.len(), 1, "{text}");
+            assert_eq!(decoder.history.parities[0].current.len(), 1, "{text}");
             decoder.begin_slot(2);
             assert!(
                 decoder

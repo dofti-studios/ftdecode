@@ -11,7 +11,9 @@
 //! callback, and callback cancellation stops delivery after the searches finish.
 //! External cancellation is shared by the running workers. With one thread,
 //! callbacks are immediate and the sequential path is used directly.
-use super::ft8::Ft8Decoder;
+//! List history and the implicit slot counter belong to the stream, so changes
+//! to worker count or frequency bands preserve assistance across calls.
+use super::{ft8::Ft8Decoder, ft8_assistance::ListHistory};
 use crate::{
     engine::{DecodeSettings, DecodeStats, DecodedSignal, MAX_FILTERED_PCM},
     message::MessageDecoder,
@@ -52,6 +54,8 @@ impl Worker {
 pub struct ParallelFt8Decoder {
     pub(crate) filtered_input: bool,
     workers: Vec<Worker>,
+    history: Option<ListHistory>,
+    next_slot: u64,
 }
 impl ParallelFt8Decoder {
     pub fn new() -> Self {
@@ -72,8 +76,13 @@ impl ParallelFt8Decoder {
         }
         // Every worker runs the sequential decoder with threads=1. Validate
         // the shared settings once before allocating worker DSP state.
-        let mut sequential_settings = settings.clone();
-        sequential_settings.threads = 1;
+        let sequential_settings = if settings.threads == 1 {
+            std::borrow::Cow::Borrowed(settings)
+        } else {
+            let mut sequential = settings.clone();
+            sequential.threads = 1;
+            std::borrow::Cow::Owned(sequential)
+        };
         sequential_settings.validate()?;
         if pcm.len() != 180000
             || pcm.iter().any(|x| {
@@ -94,21 +103,34 @@ impl ParallelFt8Decoder {
                 ..DecodeStats::default()
             });
         }
+        let slot = slot.unwrap_or(self.next_slot);
+        self.next_slot = slot.saturating_add(1);
+        if settings.ap_mode() == crate::assistance::ApMode::Auto || self.history.is_some() {
+            self.history
+                .get_or_insert_with(ListHistory::default)
+                .begin_slot(slot);
+        }
         self.workers.resize_with(settings.threads, Worker::new);
         for worker in &mut self.workers {
             worker.decoder.filtered_input = self.filtered_input;
-            if let Some(slot) = slot {
-                worker.decoder.set_slot(slot);
+            worker.decoder.set_slot(slot);
+            // Seed every frequency band from the same stream history, so
+            // resizing or repartitioning cannot strand a station in a worker.
+            // A single worker borrows the stream history by move instead.
+            if settings.threads > 1
+                && let Some(history) = &self.history
+            {
+                worker.decoder.set_list_history(history.clone());
             }
         }
         if settings.threads == 1 {
-            return self.workers[0].decoder.decode(
-                pcm,
-                &sequential_settings,
-                messages,
-                cancel,
-                on_decode,
-            );
+            let decoder = &mut self.workers[0].decoder;
+            if let Some(history) = self.history.take() {
+                decoder.set_list_history(history);
+            }
+            let result = decoder.decode(pcm, &sequential_settings, messages, cancel, on_decode);
+            self.history = decoder.take_list_history();
+            return result;
         }
         for worker in &mut self.workers {
             worker.messages = messages.clone();
@@ -117,7 +139,7 @@ impl ParallelFt8Decoder {
         let results = std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(settings.threads);
             for (worker, band) in self.workers.iter_mut().zip(bands) {
-                let mut worker_settings = sequential_settings.clone();
+                let mut worker_settings = DecodeSettings::clone(&sequential_settings);
                 worker_settings.low_hz = (band.low - GUARD_HZ).max(settings.low_hz);
                 worker_settings.high_hz = (band.high + GUARD_HZ).min(settings.high_hz);
                 handles.push(scope.spawn(move || {
@@ -181,6 +203,9 @@ impl ParallelFt8Decoder {
                 accepted.push((signal.source_bits, signal.frequency_hz, signal.dt_seconds));
                 if let Ok(message) = messages.unpack(&signal.source_bits) {
                     signal.message = message;
+                }
+                if let Some(history) = &mut self.history {
+                    history.remember(&signal);
                 }
                 stats.decoded += 1;
                 on_decode(signal);

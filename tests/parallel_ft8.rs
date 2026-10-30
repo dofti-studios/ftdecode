@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use ftdecode::{
+    assistance::ApMode,
     decode::{ft8::Ft8Decoder, parallel_ft8::ParallelFt8Decoder},
-    engine::{DecodeSettings, DecodedSignal},
+    engine::{DecodeSettings, DecodedSignal, Decoder, Mode},
     message::MessageDecoder,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +30,210 @@ fn identity(signals: &[DecodedSignal]) -> Vec<([bool; 77], f32, f32, i32)> {
         .iter()
         .map(|d| (d.source_bits, d.frequency_hz, d.dt_seconds, d.snr_db))
         .collect()
+}
+
+fn history_audio() -> (Vec<f32>, Vec<f32>) {
+    let clean = pcm(include_bytes!("fixtures/ft8-clean.wav"));
+    let noise = pcm(include_bytes!("fixtures/ft8-noise.wav"));
+    let weak = clean.iter().zip(noise).map(|(c, n)| c * 0.2 + n).collect();
+    (clean, weak)
+}
+
+fn history_settings(threads: usize) -> DecodeSettings {
+    let mut settings = DecodeSettings {
+        depth: 1,
+        threads,
+        assistance: true,
+        ..DecodeSettings::default()
+    };
+    settings.ap.mode = ApMode::Auto;
+    settings
+}
+
+fn assert_a7(found: &[DecodedSignal]) {
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].message.text, "CQ K1ABC FN42");
+    assert_eq!(found[0].diagnostics.as_ref().unwrap().ap_type, Some(7));
+}
+
+#[test]
+fn engine_preserves_a7_history_across_worker_changes() {
+    let (clean, weak) = history_audio();
+    let cancel = AtomicBool::new(false);
+    for (before, after, high_hz) in [
+        (1, 1, 3000.0),
+        (2, 2, 3000.0),
+        (1, 2, 3000.0),
+        (2, 1, 3000.0),
+        (2, 4, 3000.0),
+        (4, 2, 3000.0),
+        (12, 1, 3000.0),
+        (2, 2, 2400.0), // Repartition without changing worker count.
+    ] {
+        let mut decoder = Decoder::new(Mode::Ft8);
+        let mut config = history_settings(before);
+        decoder.set_slot(0);
+        let mut initial = Vec::new();
+        decoder
+            .decode(&clean, &config, &cancel, &mut |s| initial.push(s))
+            .unwrap();
+        assert_eq!(initial.len(), 1);
+
+        config.threads = after;
+        config.high_hz = high_hz;
+        decoder.set_slot(2);
+        let mut found = Vec::new();
+        decoder
+            .decode(&weak, &config, &cancel, &mut |s| found.push(s))
+            .unwrap();
+        assert_a7(&found);
+
+        // The assisted decode must teach the next same-parity slot, including
+        // when the caller switches back to its original worker count.
+        config.threads = before;
+        config.high_hz = 3000.0;
+        decoder.set_slot(4);
+        found.clear();
+        decoder
+            .decode(&weak, &config, &cancel, &mut |s| found.push(s))
+            .unwrap();
+        assert_a7(&found);
+    }
+}
+
+#[test]
+fn parallel_worker_changes_preserve_implicit_slot_history() {
+    let (clean, weak) = history_audio();
+    let silence = vec![0.0; 180000];
+    let mut decoder = ParallelFt8Decoder::new();
+    let mut messages = MessageDecoder::default();
+    let cancel = AtomicBool::new(false);
+    // Newly created workers must join the stream's timeline, not start at 0.
+    for (slot, threads) in [1, 2, 4, 2, 1].into_iter().enumerate() {
+        let audio = if slot == 0 {
+            &clean
+        } else if slot % 2 == 0 {
+            &weak
+        } else {
+            &silence
+        };
+        let mut found = Vec::new();
+        decoder
+            .decode(
+                audio,
+                &history_settings(threads),
+                &mut messages,
+                &cancel,
+                &mut |s| found.push(s),
+                None,
+            )
+            .unwrap();
+        if slot == 0 {
+            assert_eq!(found.len(), 1);
+        } else if slot % 2 == 0 {
+            assert_a7(&found);
+        } else {
+            assert!(found.is_empty());
+        }
+    }
+}
+
+#[test]
+fn worker_changes_keep_slot_expiry_and_reset_semantics() {
+    let (clean, weak) = history_audio();
+    let cancel = AtomicBool::new(false);
+    for (reset, next_slots) in [
+        (true, &[102][..]),
+        (false, &[104][..]),
+        (false, &[98, 100][..]),
+    ] {
+        let mut decoder = Decoder::new(Mode::Ft8);
+        decoder.set_slot(100);
+        decoder
+            .decode(&clean, &history_settings(2), &cancel, &mut |_| {})
+            .unwrap();
+        if reset {
+            decoder.reset(Mode::Ft8);
+        }
+        for &slot in next_slots {
+            decoder.set_slot(slot);
+            let mut found = Vec::new();
+            decoder
+                .decode(&weak, &history_settings(1), &cancel, &mut |s| found.push(s))
+                .unwrap();
+            assert!(found.is_empty(), "reset={reset}, slot={slot}: {found:?}");
+        }
+    }
+}
+
+#[test]
+fn repeated_and_cancelled_attempts_do_not_advance_shared_history() {
+    let (clean, weak) = history_audio();
+    let mut decoder = ParallelFt8Decoder::new();
+    let mut messages = MessageDecoder::default();
+    let cancel = AtomicBool::new(false);
+    for threads in [1, 2] {
+        decoder
+            .decode(
+                &clean,
+                &history_settings(threads),
+                &mut messages,
+                &cancel,
+                &mut |_| {},
+                Some(100),
+            )
+            .unwrap();
+    }
+    // A rejected input and a pre-cancelled attempt must not expire history or
+    // move the implicit timeline to the supplied far-future slot.
+    assert!(
+        decoder
+            .decode(
+                &weak[..100],
+                &history_settings(4),
+                &mut messages,
+                &cancel,
+                &mut |_| panic!("invalid input emitted a signal"),
+                Some(200),
+            )
+            .is_err()
+    );
+    let stats = decoder
+        .decode(
+            &weak,
+            &history_settings(4),
+            &mut messages,
+            &AtomicBool::new(true),
+            &mut |_| panic!("cancelled input emitted a signal"),
+            Some(200),
+        )
+        .unwrap();
+    assert!(stats.cancelled);
+    // AP off still advances a real opposite-parity slot, retaining history.
+    let mut config = history_settings(4);
+    config.assistance = false;
+    decoder
+        .decode(
+            &vec![0.0; 180000],
+            &config,
+            &mut messages,
+            &cancel,
+            &mut |_| {},
+            None,
+        )
+        .unwrap();
+    let mut found = Vec::new();
+    decoder
+        .decode(
+            &weak,
+            &history_settings(1),
+            &mut messages,
+            &cancel,
+            &mut |s| found.push(s),
+            None,
+        )
+        .unwrap();
+    assert_a7(&found);
 }
 
 #[test]

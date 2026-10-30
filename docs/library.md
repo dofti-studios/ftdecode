@@ -63,6 +63,8 @@ filtered transients; use that route to reproduce CLI conversion behavior.
 `WavFrames` contains internal float frames and must not be sent to TCP or stdio.
 
 Reuse one decoder per stream to retain callsign resolution and FT8 list history.
+Changing the FT8 worker count or search band preserves that history; every
+worker searches with a snapshot of the stream's bounded history.
 `reset(mode)` discards history and cached decoders. By default each decode call
 advances a consecutive period counter. Call `set_slot(period_id)` before each
 attempt when slots are skipped or repeated. Identities count actual periods,
