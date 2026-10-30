@@ -1,5 +1,41 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use ftdecode::{message::MessageDecoder, message_encode::encode};
+use ftdecode::{
+    message::{ContestExchange, MessageDecoder, MessageKind},
+    message_encode::encode,
+};
+
+#[test]
+fn rtty_multipliers_shared_with_field_day_sections_are_not_field_day_classes() {
+    let mut decoder = MessageDecoder::default();
+    for multiplier in ["WI", "AL", "AB", "CA", "MA", "X99"] {
+        for rst in (529..=599).step_by(10) {
+            for roger in [false, true] {
+                for thank_you in [false, true] {
+                    let text = format!(
+                        "{}K1ABC W9XYZ {}{rst} {multiplier}",
+                        if thank_you { "TU; " } else { "" },
+                        if roger { "R " } else { "" },
+                    );
+                    let bits = encode(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+                    let message = decoder.unpack(&bits).unwrap();
+                    assert_eq!(message.text, text);
+                    assert_eq!(message.kind, MessageKind::Rtty);
+                    assert_eq!(
+                        message.fields.contest,
+                        Some(ContestExchange::Roundup {
+                            roger,
+                            thank_you,
+                            rst,
+                            serial: None,
+                            multiplier: Some(multiplier.into()),
+                        }),
+                        "{text}",
+                    );
+                }
+            }
+        }
+    }
+}
 
 #[test]
 fn multiple_slash_calls_match_native_payloads() {

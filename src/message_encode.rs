@@ -323,6 +323,11 @@ fn field_day(w: &[&str]) -> Result<Option<[bool; 77]>, MessageError> {
     let Some((&letter, count)) = class.as_bytes().split_last() else {
         return Err(MessageError::InvalidField);
     };
+    // Sections overlap RTTY multipliers. A numeric RST such as 599 is not
+    // a Field Day class; let the other message formats try this exchange.
+    if !letter.is_ascii_uppercase() {
+        return Ok(None);
+    }
     let count = std::str::from_utf8(count)
         .unwrap()
         .parse::<u64>()
